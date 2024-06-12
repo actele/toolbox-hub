@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -33,6 +33,7 @@ type Config struct {
 	RememberPassword   string `yaml:"remember_password"`
 	ReqDataQueryStatus string `yaml:"req_data_query_status"`
 	MAXFLOW            string `yaml:"max_flow"`
+	LIMIT_MODEL        string `yaml:"limit_model"`
 	LIMIT_UPLOAD       int    `yaml:"limit_upload"`
 	LIMIT_DOWNLOAD     int    `yaml:"limit_download"`
 	SECONDS            int    `yaml:"seconds"`
@@ -267,22 +268,24 @@ func ActionCall(config Config, url string, cookies []*http.Cookie, requestData [
 	return responseBody, nil
 }
 
-// ByteCountSI formats a byte count to a human-readable string with SI units.
-func ByteCountSI(b float64) string {
-	const unit = 1000
-	if b < unit {
-		return fmt.Sprintf("%.0f B", b)
+// bytesToSize converts the given bytes into a human-readable string format with units KB, MB, GB, or TB.
+func bytesToSize(bytes uint64) string {
+	unit := []string{"B", "KB", "MB", "GB", "TB"}
+	size := float64(bytes)
+
+	if size == 0 {
+		return "0.00 B"
 	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %cB", b/float64(div), "kMGTPE"[exp])
+
+	exponent := math.Floor(math.Log(float64(bytes)) / math.Log(1024))
+	suffix := unit[int(exponent)]
+	val := math.Floor((size*100)/math.Pow(1024, exponent)) / 100
+
+	return fmt.Sprintf("%.2f%s", val, suffix)
 }
 
 // ConvertToBytes converts a string representing size (e.g., "58GB") to bytes.
-func ConvertToBytes(sizeStr string) (uint64, error) {
+func ConvertToBytes(sizeStr string) uint64 {
 	sizeStr = strings.ToUpper(sizeStr)
 	unitMap := map[string]uint64{
 		"KB": 1024,
@@ -296,23 +299,13 @@ func ConvertToBytes(sizeStr string) (uint64, error) {
 			valStr := strings.TrimSuffix(sizeStr, unit)
 			val, err := strconv.ParseFloat(valStr, 64)
 			if err != nil {
-				return 0, err
+				return 0
 			}
-			return uint64(val * float64(multiplier)), nil
+			return uint64(val * float64(multiplier))
 		}
 	}
-
-	return 0, fmt.Errorf("unsupported size unit")
-}
-
-// IsOverThreshold checks if totalBytes exceeds the threshold.
-func IsOverThreshold(totalBytes uint64, thresholdStr string) (bool, error) {
-	thresholdBytes, err := ConvertToBytes(thresholdStr)
-	if err != nil {
-		return false, err
-	}
-	fmt.Println("isOver:", totalBytes, thresholdBytes, totalBytes > thresholdBytes)
-	return totalBytes > thresholdBytes, nil
+	fmt.Println("unsupported size unit")
+	return 0
 }
 
 func queryInterfaceFlowStatus(config Config, cookies []*http.Cookie) (map[string]string, error) {
@@ -351,127 +344,111 @@ func queryInterfaceFlowStatus(config Config, cookies []*http.Cookie) (map[string
 			continue
 		}
 		if ifaceName, ok := ifaceMap["interface"].(string); ok && strings.HasPrefix(ifaceName, config.INTERFACE_PREFIX) {
-			if totalUp, ok := ifaceMap["total_up"].(float64); ok {
-				//
-				isOver, err := IsOverThreshold(uint64(totalUp), config.MAXFLOW)
-				if err != nil {
-					// 处理错误，例如记录日志、返回错误信息等
-					// 这里选择忽略错误，仅作为演示
-					continue
-				}
-				netWanInterfaces[ifaceName] = fmt.Sprintf("%.0f,%s,%t", totalUp, ByteCountSI(totalUp), isOver)
-			}
+			totalUp := ifaceMap["total_up"].(float64)
+			isOver := uint64(totalUp) > uint64(ConvertToBytes(config.MAXFLOW))
+			netWanInterfaces[ifaceName] = fmt.Sprintf("%.f,%s,%t", totalUp, bytesToSize(uint64(totalUp)), isOver)
 		}
 	}
 	if config.LOG_LEVEL == "debug" {
-		for iface, qosStatus := range netWanInterfaces {
-			fmt.Printf("Interface: %s, QosStatus: %s\n", iface, qosStatus)
+		for iface, flowStatis := range netWanInterfaces {
+			fmt.Printf("Interface: %s, FlowStatus: %s\n", iface, flowStatis)
 		}
 	}
 	return netWanInterfaces, err
 }
 
-// generateRandomEightDigitNumber 生成一个8位随机数字。
-// 该函数使用时间戳作为随机数生成器的种子，以确保每次调用时都能得到不同的随机数。
-// 返回的随机数在10000000到99999999之间，保证了数字的长度为8位。
-func generateRandomEightDigitNumber() int {
-	// 使用当前时间的纳秒级戳作为随机数生成器的种子
-	rand.Seed(time.Now().UnixNano())
-	// 生成一个0到90000000之间的随机数，然后加上10000000，以确保数字在10000000到99999999之间
-	return rand.Intn(90000000) + 10000000
-}
+// 查询接口acl状态信息
+func queryInterfaceACLStatus(config Config, cookies []*http.Cookie) (map[string]string, error) {
 
-// setQosSwitch 设置接口的质量服务（QoS）开关。
-// 参数:
-//
-//	parent - 父接口名称。
-//	iface - 需要设置QoS开关的接口名称。
-//	qosSwitch - QoS开关的设置值，通常为0或1，0表示关闭，1表示打开。
-//
-// 返回值:
-//
-//	错误 - 如果设置过程中发生错误，则返回相应的错误。
-func setQosSwitch(config Config, cookies []*http.Cookie, parent, iface string, qosSwitch int) error {
-	// 构建请求数据
-	requestData := []byte(fmt.Sprintf(`{"func_name":"layer7_intell","action":"set_iface","param":{"parent":"%s","interface":"%s","upload":%d,"download":%d,"qos_switch":%d,"comment":"","id":%08d}}`, parent, iface, config.LIMIT_UPLOAD, config.LIMIT_DOWNLOAD, qosSwitch, generateRandomEightDigitNumber()))
+	requestData := []byte(`{"func_name":"simple_qos","action":"show","param":{"TYPE":"data,total","limit":"0,100","ORDER_BY":"","ORDER":""}}`)
 
-	// 发送请求并获取响应
 	responseBody, err := ActionCall(config, config.HOST+config.URI_CALL, cookies, requestData)
 	if err != nil {
-		return fmt.Errorf("error set interface Qos: %w", err)
-	}
-
-	// 打印响应体
-	fmt.Println("Response Body:", string(responseBody))
-	return nil
-}
-
-func queryInterfaceQosStatus(config Config, cookies []*http.Cookie) (map[string]string, error) {
-	// 构建请求数据
-	requestData := []byte(`{"func_name":"layer7_intell","action":"show","param":{"TYPE":"iface_bandwidth,data","limit":"0,200","ORDER_BY":"","ORDER":""}}`)
-
-	// 发送请求并获取响应
-	responseBody, err := ActionCall(config, config.HOST+config.URI_CALL, cookies, requestData)
-	if err != nil {
-		fmt.Println("Error querying interface qos status")
+		fmt.Println("Error querying interface status:", err)
 		return nil, err
 	}
 
-	// 打印响应体
+	// Print response body
 	// fmt.Println("Response Body:", string(responseBody))
+
+	// Unmarshal JSON data into a map
 	var data map[string]interface{}
-	err = json.Unmarshal(responseBody, &data)
+	err = json.Unmarshal([]byte(responseBody), &data)
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
+		fmt.Println("Error unmarshaling JSON:", err)
+		return nil, err
 	}
 
-	ifaceBandwidth, ok := data["Data"].(map[string]interface{})["iface_bandwidth"].([]interface{})
+	// Extract and print interface names and total up values for interfaces starting with "netWan"
+	ifaceStream, ok := data["Data"].(map[string]interface{})["data"].([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("error accessing iface_bandwidth field")
+		fmt.Println("Error accessing iface_stream field")
+		return nil, err
 	}
 
-	netWanInterfaces := make(map[string]string)
-	for _, iface := range ifaceBandwidth {
+	// 创建一个 map 存储 interface 作为 key，enabled 和 id 作为 value
+	netWanInterfacesAcl := make(map[string]string)
+	for _, iface := range ifaceStream {
 		ifaceMap, ok := iface.(map[string]interface{})
 		if !ok {
 			fmt.Println("Error accessing interface field")
 			continue
 		}
 		if ifaceName, ok := ifaceMap["interface"].(string); ok && strings.HasPrefix(ifaceName, config.INTERFACE_PREFIX) {
-			parent := ifaceMap["parent"].(string)
-			upload := ifaceMap["upload"].(float64)
-			download := ifaceMap["download"].(float64)
-			qosSwitch := ifaceMap["qos_switch"].(float64)
-			comment := ifaceMap["comment"].(string)
-			netWanInterfaces[ifaceName] = fmt.Sprintf("%s,%.0f,%.0f,%.0f,%s",
-				parent, upload, download, qosSwitch, comment)
+			enabled := ifaceMap["enabled"].(string)
+			id := ifaceMap["id"].(float64)
+			netWanInterfacesAcl[ifaceName] = fmt.Sprintf("%s,%d", enabled, int64(id))
 		}
 	}
-	// Print netWanInterfaces
+
 	if config.LOG_LEVEL == "debug" {
-		for iface, qosStatus := range netWanInterfaces {
-			fmt.Printf("Interface: %s, QosStatus: %s\n", iface, qosStatus)
+		for iface, acl := range netWanInterfacesAcl {
+			fmt.Printf("Interface: %s, ACL: %s\n", iface, acl)
 		}
 	}
-	return netWanInterfaces, nil
+	return netWanInterfacesAcl, err
 }
 
-func mergeInterfaceFlowAndQosStatus(config Config, cookies []*http.Cookie) (map[string]string, error) {
+// setAclStatus 设置接口的质量服务（QoS）开关。
+// 参数:
+//
+//	action - 开启或关闭 up or down
+//	ids - acl规则的id，证书切片 比如 1或者1,2,3。
+//
+// 返回值:
+//
+//	错误 - 如果设置过程中发生错误，则返回相应的错误。
+func setAclStatus(config Config, cookies []*http.Cookie, action, ids string) error {
+	// 构建请求数据
+	requestData := []byte(fmt.Sprintf(`{"func_name":"simple_qos","action":"%s","param":{"id":"%s"}}`, action, ids))
+	// 发送请求并获取响应
+	responseBody, err := ActionCall(config, config.HOST+config.URI_CALL, cookies, requestData)
+	if err != nil {
+		return fmt.Errorf("error set interface ACL Rule: %w", err)
+	}
+	// 打印响应体
+	fmt.Println("Response Body:", string(responseBody))
+	return nil
+}
+
+func mergeInterfaceFlowAndACLRules(config Config, cookies []*http.Cookie) (map[string]string, error) {
 	// 业务逻辑
-	// 1.端口流量
+	// 1. 端口流量
+	fmt.Println("Query Flow Status!!!")
 	status_map_flow, err := queryInterfaceFlowStatus(config, cookies)
 	if err != nil {
 		fmt.Println("Error Query Flow Status:", err)
 		return nil, err
 	}
-	// 2. 端口限速情况
-	status_map_qos, err := queryInterfaceQosStatus(config, cookies)
+	// 2. 端口acl规则
+	fmt.Println("Query ACL Rules!!!")
+	status_map_acl, err := queryInterfaceACLStatus(config, cookies)
 	if err != nil {
-		fmt.Println("Error Query QOS Status:", err)
+		fmt.Println("Error Query ACL Rules:", err)
 		return nil, err
 	}
-	// 3. 合并两个查询信息
-	for k, v := range status_map_qos {
+	// 3. 合并查询信息
+	for k, v := range status_map_acl {
 		if existingValue, exists := status_map_flow[k]; exists {
 			status_map_flow[k] = fmt.Sprintf("%s,%s", existingValue, v)
 		} else {
@@ -484,65 +461,61 @@ func mergeInterfaceFlowAndQosStatus(config Config, cookies []*http.Cookie) (map[
 func taskMain(config Config) {
 	// 登录获取cookie
 	cookies := getCookies(config)
-	// 查询接口流量和限流状态
-	wanInterfaces, err := mergeInterfaceFlowAndQosStatus(config, cookies)
+	// 查询接口流量、限流状态、acl规则
+	netWanInterfaces, err := mergeInterfaceFlowAndACLRules(config, cookies)
 	if err != nil {
-		log.Fatal("Error merging interface flow and QoS status:", err)
+		log.Fatal("Error merging interface flow and ACL Rules:", err)
 		// 或者根据实际情况选择适当的错误处理方式
 	}
 	// header
-	fmt.Println("Interface: iface, Info: total_up,total_up_flow,isOver,parent,limit_upload,limit_download,qos_stat,comment")
+	fmt.Println("Interface: iface, Info: total_up,total_up_flow,isOver,enable,id")
 	// Print netWanInterfaces
-	for iface, info := range wanInterfaces {
+	for iface, info := range netWanInterfaces {
 		if config.LOG_LEVEL == "debug" || config.LOG_LEVEL == "info" {
 			fmt.Printf("Interface: %s, Info: %s\n", iface, info)
 		}
-		parent := strings.Split(info, ",")[3]
-		is_over := strings.Split(info, ",")[2]
-		qos_stat := strings.Split(info, ",")[6]
-		if is_over == "true" && qos_stat == "0" {
-			err := setQosSwitch(config, cookies, parent, iface, 1)
-			if err != nil {
-				fmt.Println("Error:", err)
-			}
+		isOver := strings.Split(info, ",")[2]
+		enable := strings.Split(info, ",")[3]
+		id := strings.Split(info, ",")[4]
+		// 流量过大，非限速状态
+		if isOver == "true" && enable == "no" {
+			setAclStatus(config, cookies, "up", strings.TrimSpace(id))
 		}
 	}
 }
 
-func changeQosStatus(config Config, QosStatus int) {
+func changeInterfaceACLStatus(config Config, action string) {
 	cookies := getCookies(config)
-	netWanInterfaces, err := mergeInterfaceFlowAndQosStatus(config, cookies)
+	netWanInterfaces, err := mergeInterfaceFlowAndACLRules(config, cookies)
 	if err != nil {
 		// 处理错误，比如打印错误日志
-		fmt.Println("查询QoS状态失败:", err)
+		fmt.Println("查询状态失败:", err)
 		// 根据实际情况，可以返回错误或进行其他错误处理
 		return
 	}
-	for iface, info := range netWanInterfaces {
-		fmt.Printf("Interface: %s, QosStatus: %s\n", iface, info)
-		parent := strings.Split(info, ",")[3]
-		setQosSwitch(config, cookies, parent, iface, QosStatus)
-		switch QosStatus {
-		case 0:
-			fmt.Println("QoS is disabled")
-		case 1:
-			fmt.Println("QoS is enabled")
-		default:
-			fmt.Printf("Invalid QoS status: %s\n", QosStatus)
-		}
+	var ids []string // 用于存储所有id
+	for _, info := range netWanInterfaces {
+		// 假设info是一个map，且包含"id"键
+		id := strings.Split(info, ",")[4]
+		ids = append(ids, id)
 	}
+
+	// 将ids切片转换为以逗号分隔的字符串
+	commaSeparatedIds := strings.Join(ids, ",")
+	fmt.Println("Comma separated IDs:", commaSeparatedIds)
+	setAclStatus(config, cookies, action, commaSeparatedIds)
 }
 
 // dailyTask represents the second job that needs to be done daily
 func taskLimitStartAll(config Config) {
 	fmt.Println("Daily Task Start All Limit executed at:", time.Now())
-	changeQosStatus(config, 1)
+	changeInterfaceACLStatus(config, "up")
 }
 
 // dailyTask represents the second job that needs to be done daily
 func taskLimitEndAll(config Config) {
 	fmt.Println("Daily Task End All Limit executed at:", time.Now())
-	changeQosStatus(config, 0)
+	changeInterfaceACLStatus(config, "down")
 }
 
 func taskClearFlow(config Config) {

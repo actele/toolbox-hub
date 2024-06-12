@@ -13,11 +13,9 @@ interface_prefix: "wan"
 # 上行流量上限，单位为MB或者GB
 max_flow: "10GB"
 
-# 限速模式 acl / smart
-limit_model: "acl"
 # 流控限速配置,单位(KB/s）1MB=8Mb；1Mb=128KB=1024kb
 limit_upload: 1
-limit_download: 1280000
+limit_download: 0
 
 # 限速定时开关时间（每日）
 # 限速开始时间
@@ -28,7 +26,7 @@ limit_end: "18:59"
 # 初始化流量统计时间
 clear_time: "00:00" 
 
-# 间隔时长，单位秒，默认30分钟
+# 间隔时长，单位秒，默认10秒
 seconds: 10
 
 # 打印模式,debug,error,info,warn
