@@ -84,7 +84,7 @@ func main() {
 		ProductID: config.ProductID,
 		IssueDate: time.Now().Format(time.RFC3339),
 		// ExpiryDate:  time.Now().AddDate(0, 0, 7).Format(time.RFC3339),
-		ExpiryDate:  time.Now().Add(time.Hour * 24 * config.ExpiryDay).Format(time.RFC3339),
+		ExpiryDate:  time.Now().Add(time.Hour * 24 * time.Duration(config.ExpiryDay)).Format(time.RFC3339),
 		Permissions: config.Permissions,
 	}
 
