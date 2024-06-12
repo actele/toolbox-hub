@@ -1,0 +1,35 @@
+# ikuai服务端信息，只需要修改host
+host: "https://192.168.2.1"
+uri_login: "/Action/login"
+uri_call: "/Action/call" 
+
+# ikuai登录账号密码，密码加密的，从网页上抓包获取
+username: ""
+password: ""
+
+# 统计流量的网络接口前缀
+interface_prefix: "wan"
+
+# 上行流量上限，单位为MB或者GB
+max_flow: "10GB"
+
+# 限速模式 acl / smart
+limit_model: "acl"
+# 流控限速配置,单位(KB/s）1MB=8Mb；1Mb=128KB=1024kb
+limit_upload: 1
+limit_download: 1280000
+
+# 限速定时开关时间（每日）
+# 限速开始时间
+limit_start: "00:00"
+# 限速关闭时间
+limit_end: "18:59"
+
+# 初始化流量统计时间
+clear_time: "00:00" 
+
+# 间隔时长，单位秒，默认30分钟
+seconds: 10
+
+# 打印模式,debug,error,info,warn
+log_level: "info"
