@@ -169,15 +169,18 @@ func login(config Config) (string, error) {
 		responseBody, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return "", fmt.Errorf("error reading response body.")
+
 		}
 		fmt.Println("Response Body:", string(responseBody))
 	}
 	// Get the Set-Cookie header
 	cookies := resp.Header.Get("Set-Cookie")
 	if cookies == "" {
-		return "", fmt.Errorf("Set-Cookie header not found")
+		return "", fmt.Errorf("Set-Cookie header not found.")
 	}
-	fmt.Println(cookies)
+	if config.LOG_LEVEL == "debug" {
+		fmt.Println(cookies)
+	}
 	// 使用strings.Split函数根据'='分割字符串，然后取第二部分
 	parts := strings.Split(cookies, "=")
 	if len(parts) > 1 {
@@ -195,8 +198,9 @@ func getCookies(config Config) []*http.Cookie {
 		fmt.Println("Error:", err)
 		return nil
 	}
-
-	fmt.Println("Set-Cookie:", cookie)
+	if config.LOG_LEVEL == "debug" {
+		fmt.Println("Set-Cookie:", cookie)
+	}
 	// 创建一个 Cookie 切片
 	cookies := []*http.Cookie{
 		{Name: "sess_key", Value: cookie},
@@ -434,14 +438,18 @@ func setAclStatus(config Config, cookies []*http.Cookie, action, ids string) err
 func mergeInterfaceFlowAndACLRules(config Config, cookies []*http.Cookie) (map[string]string, error) {
 	// 业务逻辑
 	// 1. 端口流量
-	fmt.Println("Query Flow Status!!!")
+	if config.LOG_LEVEL == "debug" {
+		fmt.Println("Query Flow Status!!!")
+	}
 	status_map_flow, err := queryInterfaceFlowStatus(config, cookies)
 	if err != nil {
 		fmt.Println("Error Query Flow Status:", err)
 		return nil, err
 	}
 	// 2. 端口acl规则
-	fmt.Println("Query ACL Rules!!!")
+	if config.LOG_LEVEL == "debug" {
+		fmt.Println("Query ACL Rules!!!")
+	}
 	status_map_acl, err := queryInterfaceACLStatus(config, cookies)
 	if err != nil {
 		fmt.Println("Error Query ACL Rules:", err)
@@ -468,7 +476,9 @@ func taskMain(config Config) {
 		// 或者根据实际情况选择适当的错误处理方式
 	}
 	// header
-	fmt.Println("Interface: iface, Info: total_up,total_up_flow,isOver,enable,id")
+	if config.LOG_LEVEL == "debug" {
+		fmt.Println("Interface: iface, Info: total_up,total_up_flow,isOver,enable,id")
+	}
 	// Print netWanInterfaces
 	for iface, info := range netWanInterfaces {
 		if config.LOG_LEVEL == "debug" || config.LOG_LEVEL == "info" {
@@ -618,6 +628,49 @@ func setTimedTasks(config Config) {
 	select {}
 }
 
+// Function to handle API requests with an internal parameter
+func apiHandler(message string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get the "name" query parameter
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			name = "world"
+		}
+		fmt.Fprintf(w, "Hello, %s! \n%s", name, message)
+	}
+}
+
+func checkLicense() string {
+	// Decrypt and validate license
+	// License文件名为"license"
+	licenseFile := "license"
+	// 使用ioutil.ReadFile读取整个文件内容
+	content, err := ioutil.ReadFile(licenseFile)
+	if err != nil {
+		log.Fatalf("Error reading file: %v", err)
+	}
+	encryptionKey := []byte("K67tJXm88Fq82DkP") // Replace with your actual key
+
+	licenseResult := ""
+	license, err := DecryptLicense(string(content), encryptionKey)
+	if err != nil {
+		licenseResult = "License decryption failed"
+		fmt.Println("Error decrypting license:", err)
+	}
+
+	err = ValidateLicense(license)
+	if err != nil {
+		licenseResult = "License validation failed"
+		fmt.Println("License validation failed:", err)
+	}
+
+	if err == nil {
+		licenseResult = fmt.Sprintf("License is valid. User:%s\nLicense is valid. ExpriyDate:%s", license.Username, license.ExpiryDate)
+	}
+	fmt.Println(licenseResult)
+	return licenseResult
+}
+
 func main() {
 	// Read configuration from file
 	configFile, err := os.Open("config.yaml")
@@ -640,32 +693,22 @@ func main() {
 		return
 	}
 
-	// Decrypt and validate license
-	// License文件名为"license"
-	licenseFile := "license"
-	// 使用ioutil.ReadFile读取整个文件内容
-	content, err := ioutil.ReadFile(licenseFile)
-	if err != nil {
-		log.Fatalf("Error reading file: %v", err)
+	licenseResult := checkLicense()
+
+	if strings.HasPrefix(licenseResult, "License is valid") {
+		// 启动定时任务
+		taskMain(config)
+
+		// 设置定时任务
+		setTimedTasks(config)
+	} else {
+		fmt.Println("License is not valid. Exiting...")
+		// Set up the API handler
+		http.HandleFunc("/api", apiHandler(licenseResult))
+		// Start the HTTP server
+		fmt.Println("Starting server at :8088")
+		if err := http.ListenAndServe(":8088", nil); err != nil {
+			fmt.Println("Failed to start server:", err)
+		}
 	}
-	encryptionKey := []byte("K67tJXm88Fq82DkP") // Replace with your actual key
-	license, err := DecryptLicense(string(content), encryptionKey)
-	if err != nil {
-		fmt.Println("Error decrypting license:", err)
-		return
-	}
-
-	err = ValidateLicense(license)
-	if err != nil {
-		fmt.Println("License validation failed:", err)
-		return
-	}
-
-	fmt.Println("License is valid. User:", license.Username)
-	fmt.Println("License is valid. ExpriyDate:", license.ExpiryDate)
-
-	taskMain(config)
-
-	// 设置定时任务
-	setTimedTasks(config)
 }

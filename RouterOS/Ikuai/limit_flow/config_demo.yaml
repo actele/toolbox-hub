@@ -29,5 +29,5 @@ clear_time: "00:00"
 # 间隔时长，单位秒，默认10秒
 seconds: 10
 
-# 打印模式,debug,error,info,warn
+# 打印模式,debug,info
 log_level: "info"
